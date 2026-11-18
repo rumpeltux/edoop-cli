@@ -152,6 +152,12 @@ def cmd_messages(args: argparse.Namespace) -> int:
     if action == "list":
         params = _parse_kv(args.query) or None
         _emit(client.messages(params), as_json=args.json)
+    elif action == "inbox":
+        params = _parse_kv(args.query) or None
+        _emit(client.inbox(params), as_json=args.json)
+    elif action == "download":
+        dest = client.download_document(args.post_id, args.document_id, destination=args.output)
+        print(f"Anhang gespeichert unter {dest}")
     elif action == "read":
         params = _parse_kv(args.query) or None
         _emit(client.channel_messages(args.channel, params), as_json=args.json)
@@ -159,6 +165,40 @@ def cmd_messages(args: argparse.Namespace) -> int:
         extra = _parse_data_arg(args.data)
         extra = extra if isinstance(extra, dict) else None
         _emit(client.send_message(args.channel, args.text, extra), as_json=args.json)
+    return 0
+
+
+def cmd_forward(args: argparse.Namespace) -> int:
+    from pathlib import Path
+    from .forward import extract_post_id_from_text, forward_new_posts
+
+    client = _client_from_args(args)
+    recipient = args.to or client.config.email
+    if not recipient:
+        raise EdoopError("Empfängeradresse fehlt. Bitte über --to <email> angeben.")
+
+    specific_post = args.post
+    # If not passed via --post, check if stdin was piped (e.g. from .mailfilter)
+    if not specific_post and not sys.stdin.isatty():
+        try:
+            stdin_data = sys.stdin.read(10000)
+            specific_post = extract_post_id_from_text(stdin_data)
+        except Exception:
+            pass
+
+    state_path = Path(args.state_file) if args.state_file else None
+
+    forward_new_posts(
+        client=client,
+        recipient=recipient,
+        from_header=args.from_header,
+        mail_cmd=args.mail_cmd,
+        state_file=state_path,
+        specific_post_id=specific_post,
+        max_posts=args.max_posts,
+        dry_run=args.dry_run,
+        mark_seen=args.mark_seen,
+    )
     return 0
 
 
@@ -331,16 +371,37 @@ def build_parser() -> argparse.ArgumentParser:
     m_list = msg_sub.add_parser("list", help="Kanäle / Nachrichtenübersicht auflisten.")
     _add_common(m_list)
     m_list.add_argument("-q", "--query", action="append", help="Query-Parameter key=value (mehrfach).")
+    m_inbox = msg_sub.add_parser("inbox", help="Haupt-Postfach (Posts / Mitteilungen) abrufen.")
+    _add_common(m_inbox)
+    m_inbox.add_argument("-q", "--query", action="append", help="Query-Parameter key=value (mehrfach).")
     m_read = msg_sub.add_parser("read", help="Nachrichten eines Kanals lesen.")
     _add_common(m_read)
     m_read.add_argument("channel", help="Kanal-/Thread-ID.")
     m_read.add_argument("-q", "--query", action="append", help="Query-Parameter key=value (mehrfach).")
+    m_dl = msg_sub.add_parser("download", help="Anhang einer Mitteilung herunterladen.")
+    _add_common(m_dl)
+    m_dl.add_argument("post_id", help="Post-/Mitteilungs-ID.")
+    m_dl.add_argument("document_id", help="Dokument-/Anhangs-ID.")
+    m_dl.add_argument("-o", "--output", help="Zielpfad oder Zielordner.")
     m_send = msg_sub.add_parser("send", help="Nachricht in einen Kanal senden.")
     _add_common(m_send)
     m_send.add_argument("channel", help="Kanal-/Thread-ID.")
     m_send.add_argument("text", help="Nachrichtentext.")
     m_send.add_argument("-d", "--data", help="Zusätzliche Felder als JSON.")
     p_msg.set_defaults(func=cmd_messages)
+
+    # forward
+    p_fwd = sub.add_parser("forward", help="Neue Mitteilungen per E-Mail weiterleiten (z. B. für .mailfilter/Cron).")
+    _add_common(p_fwd)
+    p_fwd.add_argument("--to", help="Empfänger-E-Mail-Adresse.")
+    p_fwd.add_argument("--from-header", help="Absender-Header (Standard: Name des Verfassers / Schule).")
+    p_fwd.add_argument("--mail-cmd", help="Eigenes Mail-Kommando (z. B. 'mail -s \"{subject}\" -a \"From: {from_header}\" {attachments} \"{recipient}\"').")
+    p_fwd.add_argument("--state-file", help="Pfad zur Statusdatei für bereits weitergeleitete IDs.")
+    p_fwd.add_argument("--post", help="Bestimmte Post-ID weiterleiten (ignoriert State-Datei).")
+    p_fwd.add_argument("--max", dest="max_posts", type=int, default=5, help="Maximale Anzahl weiterzuleitender Mitteilungen (Standard: 5).")
+    p_fwd.add_argument("--mark-seen", action="store_true", help="Aktuelle Mitteilungen als bereits weitergeleitet markieren, ohne E-Mail zu senden.")
+    p_fwd.add_argument("--dry-run", action="store_true", help="Nur anzeigen, was gesendet würde, ohne E-Mail abzusenden.")
+    p_fwd.set_defaults(func=cmd_forward)
 
     # absences
     p_abs = sub.add_parser("absences", help="Abwesenheiten / Krankmeldungen.")

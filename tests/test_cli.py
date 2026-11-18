@@ -50,7 +50,7 @@ def test_config_never_persists_password(tmp_path, monkeypatch):
 
 def test_parser_builds_all_subcommands():
     parser = build_parser()
-    for cmd in ["login", "logout", "whoami", "children", "messages", "absences", "appointments", "api", "config"]:
+    for cmd in ["login", "logout", "whoami", "children", "messages", "absences", "appointments", "api", "config", "forward"]:
         args = parser.parse_args([cmd] if cmd != "api" else ["api", "GET", "/x"])
         assert hasattr(args, "func")
 

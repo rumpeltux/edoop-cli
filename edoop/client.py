@@ -8,8 +8,11 @@ adapted without changing the command layer.
 from __future__ import annotations
 
 import json as _json
+from pathlib import Path
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
@@ -310,6 +313,86 @@ class EdoopClient:
         if extra:
             body.update(extra)
         return self.request("POST", path, json=body)
+
+
+    def inbox(self, params: Optional[Dict[str, Any]] = None) -> Any:
+        """List posts from the main inbox."""
+        query = {"index": 0, "edoopEltern": "true"}
+        if params:
+            query.update(params)
+        return self.request("GET", self._endpoint("posts_inbox"), params=query)
+
+    def post_detail(self, post_id: str) -> Any:
+        """Get detail of a post, including full description and attachments."""
+        path = self._endpoint("post_detail").format(post_id=post_id)
+        return self.request("GET", path)
+
+    def ensure_authenticated(self) -> None:
+        """Ensure client has an authenticated session; auto-logins if credentials exist."""
+        if not self.session.is_authenticated():
+            if self.config.email and self.config.password:
+                self.login(self.config.email, self.config.password)
+            else:
+                raise NotLoggedInError("Nicht angemeldet. Bitte zuerst 'edoop login' ausführen.")
+
+    def download_document(
+        self,
+        post_id: str,
+        document_id: str,
+        destination: Optional[Union[str, Path]] = None,
+        filename: Optional[str] = None,
+    ) -> Path:
+        """Download an attachment file from a post.
+
+        If ``destination`` is a directory (or None), the file is saved inside it
+        using the filename from Content-Disposition (or ``filename`` if provided).
+        If ``destination`` is a file path, it is written directly to that path.
+        """
+        if not self.session.is_authenticated():
+            raise NotLoggedInError("Nicht angemeldet. Bitte zuerst 'edoop login' ausführen.")
+
+        path = self._endpoint("post_document").format(post_id=post_id, document_id=document_id)
+        resp = self.raw_request("GET", path)
+        if resp.status_code in (401, 419):
+            raise NotLoggedInError("Sitzung ist abgelaufen oder ungültig. Bitte erneut 'edoop login' ausführen.")
+        if not resp.ok:
+            raise ApiError(f"Download fehlgeschlagen (HTTP {resp.status_code}).", status_code=resp.status_code)
+
+        target_name = (
+            filename
+            or _extract_filename(resp.headers.get("Content-Disposition", ""))
+            or f"document_{document_id}"
+        )
+
+        if destination is None:
+            dest_path = Path.cwd() / target_name
+        else:
+            dest_path = Path(destination)
+            if dest_path.is_dir() or str(destination).endswith(("/", "\\")):
+                dest_path.mkdir(parents=True, exist_ok=True)
+                dest_path = dest_path / target_name
+            else:
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        dest_path.write_bytes(resp.content)
+        return dest_path
+
+
+def _extract_filename(disposition: str) -> Optional[str]:
+    """Parse filename from Content-Disposition header."""
+    if not disposition:
+        return None
+    # RFC 5987 / RFC 6266 utf-8 encoded filename
+    m_utf8 = re.search(r"filename\*=(?:UTF-8|utf-8)''([^;]+)", disposition)
+    if m_utf8:
+        return unquote(m_utf8.group(1).strip('"\''))
+    m_std = re.search(r'filename="([^"]+)"', disposition)
+    if m_std:
+        return m_std.group(1)
+    m_bare = re.search(r'filename=([^;\s]+)', disposition)
+    if m_bare:
+        return m_bare.group(1).strip('"\'')
+    return None
 
 
 def _safe_body(resp: requests.Response) -> Any:
